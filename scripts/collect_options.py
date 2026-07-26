@@ -106,28 +106,29 @@ def collect_cboe(day_dir: str, tag: str):
             continue
         js = r.json()
         data = js.get("data", {})
-        spot = data.get("current_price")
-        rows = []
-        for o in data.get("options", []):
-            m = OCC_RE.match(o.get("option", ""))
-            if not m:
-                continue
-            root, ymd, right, strike = m.groups()
-            rows.append({
-                "occ": o["option"], "root": root,
-                "expiry": pd.Timestamp(f"20{ymd[:2]}-{ymd[2:4]}-{ymd[4:6]}"),
-                "right": right, "strike": int(strike) / 1000.0,
-                "bid": o.get("bid"), "ask": o.get("ask"), "last": o.get("last_trade_price"),
-                "iv": o.get("iv"), "delta": o.get("delta"), "gamma": o.get("gamma"),
-                "theta": o.get("theta"), "vega": o.get("vega"),
-                "open_interest": o.get("open_interest"), "volume": o.get("volume"),
-            })
-        df = pd.DataFrame(rows)
+        # RAW-FIRST: every per-option field verbatim; parsed columns are ADDITIVE
+        df = pd.DataFrame(data.get("options", []))
+        if df.empty:
+            print(f"cboe {tkr}: empty chain")
+            continue
+        parsed = df["option"].str.extract(OCC_RE)
+        parsed.columns = ["p_root", "p_ymd", "p_right", "p_strike_raw"]
+        df["p_root"] = parsed.p_root
+        df["p_expiry"] = pd.to_datetime("20" + parsed.p_ymd.str[:2] + "-" +
+                                        parsed.p_ymd.str[2:4] + "-" + parsed.p_ymd.str[4:6],
+                                        errors="coerce")
+        df["p_right"] = parsed.p_right
+        df["p_strike"] = pd.to_numeric(parsed.p_strike_raw, errors="coerce") / 1000.0
+        # every top-level scalar of the payload, verbatim, prefixed u_ / payload_
+        for k, v in data.items():
+            if not isinstance(v, (list, dict)):
+                df[f"u_{k}"] = v
+        df["payload_timestamp"] = js.get("timestamp")   # CBOE quote-generation time
         df["underlying"] = tkr
-        df["spot"] = spot
         df["collected_at"] = ts
         df.to_parquet(f"{day_dir}/cboe_{tkr}_{tag}.parquet", index=False)
-        print(f"cboe {tkr}: {len(df)} contracts, spot={spot}")
+        print(f"cboe {tkr}: {len(df)} contracts, "
+              f"spot={data.get('current_price')}")
     if failed:
         print(f"cboe: PERMANENT FAILURES this run: {failed}")
 
@@ -138,6 +139,9 @@ _MON = {m: i + 1 for i, m in enumerate(
 
 
 def _parse_deribit(result, roots_filter=None):
+    """RAW-FIRST: every API field verbatim; parsed p_* columns are ADDITIVE.
+    Price units: coin-settled instruments quote bid/ask/mark in UNDERLYING units,
+    USDC-settled in USDC — stored as-is; conversion happens in analysis only."""
     rows = []
     for o in result:
         m = DERIBIT_RE.match(o.get("instrument_name", ""))
@@ -146,18 +150,12 @@ def _parse_deribit(result, roots_filter=None):
         root, dd, mon, yy, strike, right = m.groups()
         if roots_filter and root not in roots_filter:
             continue
-        rows.append({
-            "instrument": o["instrument_name"], "root": root,
-            "expiry": pd.Timestamp(2000 + int(yy), _MON[mon], int(dd)),
-            "right": right, "strike": float(strike.replace("d", ".")),
-            # settlement='coin': bid/ask/mark in UNDERLYING units (inverse);
-            # settlement='usdc': prices in USDC (linear)
-            "bid": o.get("bid_price"), "ask": o.get("ask_price"),
-            "mark": o.get("mark_price"), "mark_iv": o.get("mark_iv"),
-            "open_interest": o.get("open_interest"), "volume": o.get("volume"),
-            "underlying_price": o.get("underlying_price"),
-            "interest_rate": o.get("interest_rate"),
-        })
+        rec = dict(o)   # verbatim payload
+        rec["p_root"] = root
+        rec["p_expiry"] = pd.Timestamp(2000 + int(yy), _MON[mon], int(dd))
+        rec["p_right"] = right
+        rec["p_strike"] = float(strike.replace("d", "."))
+        rows.append(rec)
     return rows
 
 

@@ -134,16 +134,35 @@ def convex_metrics(ch, spot):
                 atm_iv=atm_iv, c_oi=row.open_interest)
 
 
+def adapt_cboe(raw):
+    """Raw v2 snapshot -> canonical analysis columns (transform layer, explicit)."""
+    ch = raw.copy()
+    if "p_expiry" in ch:      # raw-first schema (2026-07-26+)
+        ch["expiry"] = ch.p_expiry
+        ch["right"] = ch.p_right
+        ch["strike"] = ch.p_strike
+        spot = float(ch.u_current_price.iloc[0])
+    else:                     # v1 curated schema (first two days)
+        spot = float(ch.spot.iloc[0])
+    return ch, spot
+
+
 def deribit_chain_usd(df):
-    """Normalize Deribit chain to USD prices."""
+    """Raw Deribit snapshot -> canonical USD-price columns (transform layer)."""
     d = df.copy()
+    if "p_expiry" in d:       # raw-first schema
+        d["expiry"] = d.p_expiry
+        d["right"] = d.p_right
+        d["strike"] = d.p_strike
+        d["bid"] = d.bid_price
+        d["ask"] = d.ask_price
+        d["mark"] = d.mark_price
     if (d.settlement == "coin").any():
         for c in ["bid", "ask", "mark"]:
             d[c] = d[c] * d.underlying_price
     d["iv"] = d.mark_iv / 100.0
     d["delta"] = np.nan
     d["theta"] = np.nan
-    d["open_interest"] = d.open_interest
     return d
 
 
@@ -182,8 +201,7 @@ def main():
             raw = load_chain(day_dir, f"cboe_{tkr}")
             if raw is None or raw.empty:
                 continue
-            ch = raw
-            spot = float(raw.spot.iloc[0])
+            ch, spot = adapt_cboe(raw)
             if tkr not in div_cache:
                 div_cache[tkr] = div_yield(tkr, spot)
             q, div_flag = div_cache[tkr]

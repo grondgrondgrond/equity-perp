@@ -3,7 +3,7 @@
 # predict/compute-pricing boxes: collect -> s3 sync -> prune local -> heartbeat.
 #
 # Required env (set in crontab):
-#   EQUITY_PERP_S3   e.g. s3://compute-pricing/options   (destination prefix)
+#   EQUITY_PERP_S3   e.g. s3://equity-deriv-trading/options   (destination prefix)
 # Optional:
 #   HEALTHCHECK_URL  healthchecks.io ping URL (skipped if unset)
 #   EOD=1            tag this run as the canonical daily snapshot (22:00 UTC entry)
